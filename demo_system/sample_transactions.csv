@@ -1,0 +1,4 @@
+client_id,client_name,amount,date,description
+001,ABC LLC,150.00,2026-09-01,Consulting
+002,XYZ LLC,275.00,2026-09-01,Services
+003,Global LLC,430.00,2026-09-02,Monthly fee

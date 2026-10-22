@@ -1,0 +1,23 @@
+.venv/
+__pycache__/
+*.py[cod]
+
+build/
+dist/
+*.spec
+
+.env
+.env.*
+!.env.example
+
+*.log
+*.sqlite3
+resultado_automacao.*
+
+# Artefatos de compilação e dependências
+/build/
+/dist/
+/node_modules/
+
+# Cache de testes
+.pytest_cache/
