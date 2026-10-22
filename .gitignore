@@ -21,3 +21,6 @@ resultado_automacao.*
 
 # Cache de testes
 .pytest_cache/
+
+# Metadados locais do Supabase
+/supabase/.temp/
