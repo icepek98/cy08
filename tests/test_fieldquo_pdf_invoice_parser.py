@@ -51,6 +51,109 @@ Consulting | 2 | 75.00 | 150.00
         self.assertIn("source_text", result.__dataclass_fields__)
         self.assertIn("Consulting | 2 | 75.00 | 150.00", result.evidence["line_items"])
 
+    def test_parses_written_issue_and_payment_due_dates(self):
+        text = self.COMPLETE_INVOICE.replace(
+            "Issued: 2025-01-02", "Issued: 2 January 2025"
+        ).replace(
+            "Due: 2025-02-01", "Payment Due: 1 February 2025"
+        )
+
+        result = parse_fieldquo_invoice_text(text)
+
+        self.assertEqual(result.invoice["issued"], date(2025, 1, 2))
+        self.assertEqual(result.invoice["due"], date(2025, 2, 1))
+
+    def test_parses_currency_from_total_label(self):
+        text = self.COMPLETE_INVOICE.replace(
+            "Currency: EUR\n", ""
+        ).replace(
+            "Total: 175.00", "Total (EUR): 175.00"
+        )
+
+        result = parse_fieldquo_invoice_text(text)
+
+        self.assertEqual(result.invoice["currency"], "EUR")
+        self.assertEqual(result.invoice["total"], Decimal("175.00"))
+
+    def test_parses_aligned_table_without_separators(self):
+        text = """\
+Invoice number: INV-101
+Client: Example Client
+Issued: 2025-01-02
+Due: 2025-02-01
+Currency: EUR
+Total: 175.00
+Description Qty Unit Price Amount
+Consulting 2 75.00 150.00
+Travel 1 25.00 25.00
+"""
+
+        result = parse_fieldquo_invoice_text(text)
+
+        self.assertEqual(
+            result.invoice["line_items"],
+            [
+                {
+                    "description": "Consulting",
+                    "quantity": Decimal("2"),
+                    "unit_price": Decimal("75.00"),
+                    "line_total": Decimal("150.00"),
+                },
+                {
+                    "description": "Travel",
+                    "quantity": Decimal("1"),
+                    "unit_price": Decimal("25.00"),
+                    "line_total": Decimal("25.00"),
+                },
+            ],
+        )
+
+    def test_parses_supported_money_formats_in_aligned_table(self):
+        text = """\
+Invoice number: INV-102
+Client: Example Client
+Issued: 2025-01-02
+Currency: EUR
+Total: 4,919.12
+Description Qty Unit Price Amount
+Consulting 2 1,234.56 1,234.56
+Travel 1 1.234,56 1.234,56
+Admin 1 150.00 150,00
+Support 1 150,00 150.00
+"""
+
+        result = parse_fieldquo_invoice_text(text)
+
+        self.assertEqual(
+            result.invoice["line_items"],
+            [
+                {
+                    "description": "Consulting",
+                    "quantity": Decimal("2"),
+                    "unit_price": Decimal("1234.56"),
+                    "line_total": Decimal("1234.56"),
+                },
+                {
+                    "description": "Travel",
+                    "quantity": Decimal("1"),
+                    "unit_price": Decimal("1234.56"),
+                    "line_total": Decimal("1234.56"),
+                },
+                {
+                    "description": "Admin",
+                    "quantity": Decimal("1"),
+                    "unit_price": Decimal("150.00"),
+                    "line_total": Decimal("150.00"),
+                },
+                {
+                    "description": "Support",
+                    "quantity": Decimal("1"),
+                    "unit_price": Decimal("150.00"),
+                    "line_total": Decimal("150.00"),
+                },
+            ],
+        )
+
     def test_parses_multiple_line_items_in_source_order(self):
         text = self.COMPLETE_INVOICE.replace(
             "Consulting | 2 | 75.00 | 150.00",

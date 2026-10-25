@@ -13,7 +13,7 @@ _FIELD_LABELS = {
     "invoice_number": r"invoice\s*(?:number|no\.?|#)",
     "client": r"(?:client|customer|bill\s+to)",
     "issued": r"(?:issued|issue\s+date|invoice\s+date)",
-    "due": r"(?:due|due\s+date)",
+    "due": r"(?:payment\s+due|due(?:\s+date)?)",
     "currency": r"currency",
     "subtotal": r"subtotal",
     "tax": r"(?:tax|vat)",
@@ -95,6 +95,23 @@ def parse_fieldquo_invoice_text(text: str) -> ParsedFieldQuoInvoice:
     lines = text.splitlines()
 
     for line in lines:
+        total_match = re.match(
+            r"^\s*total\s*\(([A-Z]{3})\)\s*[: ]\s*"
+            r"([+-]?(?:\d[\d., ]*\d|\d))\s*$",
+            line,
+            re.IGNORECASE,
+        )
+        if total_match:
+            _collect_field(
+                invoice, evidence_lists, ambiguities,
+                conflicting_fields, "currency", total_match.group(1).upper()
+            )
+            _collect_field(
+                invoice, evidence_lists, ambiguities,
+                conflicting_fields, "total", total_match.group(2).strip()
+            )
+            continue
+
         for field_name, pattern in _LABEL_PATTERNS.items():
             match = pattern.match(line)
             if match and match.group(1).strip():
@@ -205,14 +222,26 @@ def _collect_field(
 
 def _parse_date(value: str) -> tuple[date | None, str | None]:
     token = value.strip()
+
+    # Datas em inglês por extenso, como 15 January 2026.
+    candidate = token.replace(",", "")
+    for fmt in ("%d %B %Y", "%d %b %Y", "%B %d %Y", "%b %d %Y"):
+        try:
+            return datetime.strptime(candidate, fmt).date(), None
+        except ValueError:
+            pass
+
     if not _DATE_TOKEN.fullmatch(token):
         return None, "formato de data não reconhecido."
+
     try:
         if re.fullmatch(r"\d{4}-\d{2}-\d{2}", token):
             return date.fromisoformat(token), None
+
         first, second, _ = re.split(r"[/-]", token)
         if int(first) <= 12 and int(second) <= 12:
             return None, "data numérica ambígua; formato não determinado."
+
         for date_format in _DATE_FORMATS:
             try:
                 return datetime.strptime(token, date_format).date(), None
@@ -220,8 +249,8 @@ def _parse_date(value: str) -> tuple[date | None, str | None]:
                 continue
     except ValueError:
         return None, "data inválida."
-    return None, "data inválida."
 
+    return None, "data inválida."
 
 def _parse_money(value: str) -> tuple[Decimal | None, str | None]:
     token = value.strip()
@@ -364,7 +393,100 @@ def _parse_line_table(
         if not items:
             issues.append("line_items: tabela reconhecida, mas sem linhas legíveis.")
         return items, evidence, issues, True
+    aligned = _parse_aligned_line_table(lines)
+    if aligned is not None:
+        return aligned
     return [], [], [], False
+
+
+def _parse_aligned_line_table(
+    lines: list[str],
+) -> tuple[list[dict[str, Any]], list[str], list[str], bool] | None:
+    header_index = None
+
+    for index, line in enumerate(lines):
+        if (
+            re.search(r"\bdescription\b", line, re.I)
+            and re.search(r"\bqty\b", line, re.I)
+            and re.search(r"\bunit\s*price\b", line, re.I)
+            and re.search(r"\bamount\b", line, re.I)
+        ):
+            header_index = index
+            break
+
+    if header_index is None:
+        return None
+
+    items: list[dict[str, Any]] = []
+    evidence = [lines[header_index]]
+    issues: list[str] = []
+
+    # Descrição seguida de quantidade, preço unitário e total da linha.
+    row_pattern = re.compile(
+        r"^\s*(.*?)\s+"
+        r"(\d+(?:[.,]\d+)?)\s+"
+        r"([+-]?\d[\d.,]*)\s+"
+        r"([+-]?\d[\d.,]*)\s*$"
+    )
+
+    for row_number, row in enumerate(
+        lines[header_index + 1:], start=header_index + 2
+    ):
+        if not row.strip():
+            if items:
+                break
+            continue
+
+        if re.match(r"^\s*total\b", row, re.I):
+            break
+
+        match = row_pattern.fullmatch(row)
+        if not match:
+            if items:
+                # Não atravessa texto posterior à tabela.
+                break
+            continue
+
+        description, qty_raw, price_raw, amount_raw = match.groups()
+        quantity, quantity_error = _parse_money(qty_raw)
+        unit_price, price_error = _parse_money(price_raw)
+        line_total, amount_error = _parse_money(amount_raw)
+
+        item = {
+            "description": description.strip() or None,
+            "quantity": quantity,
+            "unit_price": unit_price,
+            "line_total": line_total,
+        }
+        items.append(item)
+        evidence.append(row)
+
+        for field_name, error in (
+            ("quantity", quantity_error),
+            ("unit_price", price_error),
+            ("line_total", amount_error),
+        ):
+            if error:
+                issues.append(
+                    f"line_items[{len(items) - 1}].{field_name}: "
+                    f"{error} (linha {row_number})."
+                )
+
+        if not item["description"]:
+            issues.append(
+                f"line_items[{len(items) - 1}].description ausente "
+                f"(linha {row_number})."
+            )
+
+    if not items:
+        return (
+            [],
+            evidence,
+            ["line_items: cabeçalho reconhecido, mas sem linhas legíveis."],
+            True,
+        )
+
+    return items, evidence, issues, True
 
 
 def _normalize_header(value: str) -> str:
